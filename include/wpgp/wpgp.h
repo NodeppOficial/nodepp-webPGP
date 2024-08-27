@@ -91,8 +91,8 @@ public:
 
         auto header = encoder::base64::get( json::stringify( object_t({
             { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
-            { "size", obj->size }, { "type", "PRIVATE" },
-            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) }
+            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
+            { "size", obj->size }, { "type", "PRIVATE" }
         }) ));
 
         sha.update( body ); sha.update( header );
@@ -124,8 +124,8 @@ public:
 
         auto header = encoder::base64::get( json::stringify( object_t({
             { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
-            { "size", obj->size }, { "type", "PUBLIC" },
-            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) }
+            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
+            { "size", obj->size }, { "type", "PUBLIC" }
         }) ));
 
         sha.update( body ); sha.update( header );
