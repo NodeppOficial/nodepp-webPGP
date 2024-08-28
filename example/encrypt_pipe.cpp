@@ -10,6 +10,6 @@ void onMain() { wpgp_t pgp;
     auto fint = fs::readable( "LICENSE" );
     auto fout = fs::writable( "MESSAGE.wpgp" );
     
-    pgp.pipe( fint, fout );
+    pgp.encrypt_pipe( fint, fout );
 
 }

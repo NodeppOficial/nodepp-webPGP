@@ -32,6 +32,7 @@ protected:
         ulong header[2] = {0,0};
         ulong   body[2] = {0,0};
         ulong   hash[2] = {0,0};
+        char    mask[5] ;
     };
 
     struct NODE {
@@ -83,17 +84,20 @@ public:
     }
 
     string_t write_private_key_to_memory( const string_t& pass=nullptr ) const noexcept {
-        CTX ctx; 
+        CTX ctx; memcpy( &ctx.mask, encoder::key::generate( 4 ).get(), 5 );
         
         auto body   = obj->fd.write_private_key_to_memory( pass.get() );
-             body   = encoder::base64::get( body );
+             body   = encoder::base64::get( encoder::XOR::get( body, ctx.mask ) );
+
         auto sha    = crypto::hash::SHA256(); 
 
-        auto header = encoder::base64::get( json::stringify( object_t({
-            { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
-            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
-            { "size", obj->size }, { "type", "PRIVATE" }
-        }) ));
+        auto header = encoder::base64::get( encoder::XOR::get( 
+            json::stringify( object_t({
+                { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
+                { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
+                { "size", obj->size }, { "type", "PRIVATE" }
+            }) 
+        ), ctx.mask ));
 
         sha.update( body ); sha.update( header );
 
@@ -116,17 +120,20 @@ public:
     }
 
     string_t write_public_key_to_memory() const noexcept { 
-        CTX ctx;
+        CTX ctx; memcpy( &ctx.mask, encoder::key::generate( 4 ).get(), 5 );
         
         auto body   = obj->fd.write_public_key_to_memory();
-             body   = encoder::base64::get( body );
+             body   = encoder::base64::get( encoder::XOR::get( body, ctx.mask ) );
+
         auto sha    = crypto::hash::SHA256(); 
 
-        auto header = encoder::base64::get( json::stringify( object_t({
-            { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
-            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
-            { "size", obj->size }, { "type", "PUBLIC" }
-        }) ));
+        auto header = encoder::base64::get( encoder::XOR::get( 
+            json::stringify( object_t({
+                { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
+                { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
+                { "size", obj->size }, { "type", "PUBLIC" }
+            }) 
+        ), ctx.mask ));
 
         sha.update( body ); sha.update( header );
 
@@ -148,13 +155,13 @@ public:
         if( !verify_key_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
         CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
         
-        auto header = json::parse( encoder::base64::set( 
+        auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
              pkey.slice( ctx.header[0], ctx.header[1] )
-        ));
+        ), ctx.mask ));
 
-        auto body = encoder::base64::set( 
+        auto body = encoder::XOR::get( encoder::base64::set( 
              pkey.slice( ctx.body[0], ctx.body[1] ) 
-        );
+        ), ctx.mask );
 
         if( header["type"].as<string_t>() != "PRIVATE" )
           { _EERROR( onError, "Invalid WPGP Key" ); return; }
@@ -182,13 +189,13 @@ public:
         if( !verify_key_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
         CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
         
-        auto header = json::parse( encoder::base64::set( 
+        auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
              pkey.slice( ctx.header[0], ctx.header[1] )
-        ));
+        ), ctx.mask ));
 
-        auto body = encoder::base64::set( 
+        auto body = encoder::XOR::get( encoder::base64::set( 
              pkey.slice( ctx.body[0], ctx.body[1] ) 
-        );
+        ), ctx.mask );
 
         if( header["type"].as<string_t>() != "PUBLIC" )
           { _EERROR( onError, "Invalid WPGP Key" ); return; }
@@ -216,6 +223,8 @@ public:
         CTX ctx; auto sec = crypto::hash::SHA256();
                  auto sha = crypto::hash::SHA256();
 
+        memcpy( &ctx.mask, encoder::key::generate( 4 ).get(), 5 );
+
         sec.update( string::to_string( rand() ) );
         sec.update( string::to_string( process::now() ) );
         sec.update( obj->fd.write_private_key_to_memory() );
@@ -223,13 +232,16 @@ public:
         auto enc = crypto::encrypt::AES_256_ECB( sec.get() );
                    enc.update( message );
         
-        auto body   = encoder::base64::get( enc.get() );
-        auto header = encoder::base64::get( 
-            obj->fd.public_encrypt( json::stringify( object_t({
+        auto body   = encoder::base64::get( encoder::XOR::get( 
+             enc.get(), ctx.mask
+        ));
+
+        auto header = encoder::base64::get( encoder::XOR::get(
+             obj->fd.public_encrypt( json::stringify( object_t({
                 { "size", message.size() }, { "type", "MESSAGE" }, 
                 { "pass", sec.get()      }
-            }))
-        ));
+             }))
+        ), ctx.mask ));
 
         sha.update( body ); sha.update( header );
 
@@ -247,9 +259,12 @@ public:
 
     template< class T >
     void encrypt_pipe( const T& fileA ) const noexcept {
+        char pass[5]; memcpy( pass, encoder::key::generate(4).get(), 5 );
+
+        auto XOR = crypto::encrypt::XOR( pass );
         auto b64 = crypto::encoder::BASE64();
         auto sec = crypto::hash::SHA256();
-        auto sha = crypto::hash::SHA256(); 
+        auto sha = crypto::hash::SHA256();
         auto self= type::bind( this );
 
         ptr_t<ulong> length = new ulong(0);
@@ -261,23 +276,23 @@ public:
         auto enc = crypto::encrypt::AES_256_ECB( sec.get() );
 
         fileA.onData([=]( string_t data ){ enc.update( data ); });
-        enc  .onData([=]( string_t data ){ b64.update( data ); });
-        b64  .onData([=]( string_t data ){ 
+        enc  .onData([=]( string_t data ){ XOR.update( data ); });
+        XOR  .onData([=]( string_t data ){ b64.update( data ); });
+        b64  .onData([=]( string_t data ){
             self->onData.emit( data ); 
            *length += data.size();
             sha.update( data );
         });
 
-        fileA.onClose([=](){ enc.free(); b64.free(); CTX ctx; 
+        fileA.onClose([=](){ enc.free(); b64.free(); 
+            CTX ctx; memcpy( ctx.mask, pass, 5 );
 
-            auto header = encoder::base64::get( self->obj->fd.public_encrypt( 
-                json::stringify( object_t({
+            auto header = encoder::base64::get( encoder::XOR::get(
+                 self->obj->fd.public_encrypt( json::stringify( object_t({
                     { "size", *length   }, { "type", "MESSAGE" },
                     { "pass", sec.get() },
-                }))
-            )); 
-
-            sha.update( header );
+                 }))
+            ), ctx.mask )); sha.update( header );
 
             ctx.body[0]   = 0;
             ctx.body[1]   = ctx.body[0]   + *length;
@@ -312,24 +327,25 @@ public:
         auto xtc = message.slice( -sizeof( CTX ) );
 
         CTX ctx; memcpy( &ctx, xtc.get(), sizeof( CTX ) );
+
         auto hash = crypto::hash::SHA256(); hash.update(
             message.slice( ctx.body[0], ctx.header[1] )
         );
 
-        auto header = json::parse(
-            obj->fd.private_decrypt( encoder::base64::set(
+        auto header = json::parse( obj->fd.private_decrypt( 
+            encoder::XOR::get( encoder::base64::set(
                 message.slice( ctx.header[0], ctx.header[1] )
-            ))
-        );
+            ), ctx.mask )
+        ));
 
         auto sha = message.slice( ctx.hash[0], ctx.hash[1] );
         auto sec = header["pass"].as<string_t>();
         if ( sha != hash.get() ){ return nullptr; }
 
         auto dec = crypto::decrypt::AES_256_ECB( sec );
-             dec.update( encoder::base64::set(
+             dec.update( encoder::XOR::get( encoder::base64::set(
                 message.slice( ctx.body[0], ctx.body[1] ) 
-             ));
+             ), ctx.mask ));
 
         return dec.get();
     }
@@ -346,8 +362,8 @@ public:
         fileA.pos( ctx.header[0] );
         auto xhr = fileA.read( ctx.header[1]-ctx.header[0] );
         auto hdr = json::parse( obj->fd.private_decrypt( 
-            encoder::base64::set( xhr )
-        ));        fileA.del_borrow();
+            encoder::XOR::get( encoder::base64::set( xhr ), ctx.mask )
+        )); fileA.del_borrow();
 
         auto sec = hdr["pass"].as<string_t>();
         ptr_t<ulong> len = new ulong(0);
@@ -357,6 +373,7 @@ public:
                    fileA.del_borrow();
 
         auto dec = crypto::decrypt::AES_256_ECB( sec );
+        auto XOR = crypto::encrypt::XOR( ctx.mask );
         auto b64 = crypto::decoder::BASE64();
         auto hash= crypto::hash::SHA256();
         auto self= type::bind( this );
@@ -364,7 +381,8 @@ public:
 
         fileA.onDrain([=](){ dec.free(); b64.free(); self->onClose.emit(); });
         dec.onData([=]( string_t data ){ self->onData.emit( data ); });
-        b64.onData([=]( string_t data ){ dec.update( data ); });
+        b64.onData([=]( string_t data ){ XOR.update( data ); });
+        XOR.onData([=]( string_t data ){ dec.update( data ); });
         fileA.pos( ctx.body[0] );
 
         process::add([=](){
@@ -373,7 +391,7 @@ public:
 
             while( *len < ( ctx.body[1] - ctx.body[0] ) ){ do {
                 auto dta = fileA.read( ( ctx.body[1] - ctx.body[0] ) - *len ); 
-                     hash.update( dta ); b64 .update( dta );
+                     hash.update( dta ); b64.update( dta );
                     *len += dta.size();
             } while(0); coNext; }
 
@@ -398,17 +416,17 @@ public:
             CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
             auto hash = pkey.slice( ctx.hash[0], ctx.hash[1] ); 
 
-            auto sha  = crypto::hash::SHA256(); sha.update( 
-                pkey.slice( ctx.body[0], ctx.header[1] )
-            );
-
-            auto header = json::parse( encoder::base64::set( 
+            auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
                 pkey.slice( ctx.header[0], ctx.header[1] )
-            ));
+            ), ctx.mask ));
 
             auto exp  = header["expiration"];
-            auto body = encoder::base64::set( 
+            auto body = encoder::XOR::get( encoder::base64::set( 
                 pkey.slice( ctx.body[0], ctx.body[1] ) 
+            ), ctx.mask );
+
+            auto sha  = crypto::hash::SHA256(); sha.update( 
+                pkey.slice( ctx.body[0], ctx.header[1] )
             );
 
             if( memcmp( ctx.format, "WPGP", 5 ) < 0 ){ return false; }

@@ -4,15 +4,14 @@
 using namespace nodepp;
 
 void onMain() { wpgp_t pgp;
-
-    pgp.read_private_key( "PRIVATE.wpgp" );
     
     auto fint = fs::readable( "MESSAGE.wpgp" );
+    pgp.read_private_key( "PRIVATE.wpgp" );
 
     pgp.onData([=]( string_t data ){
         console::log( data );
     });
 
-    pgp.decrypt_pipe( fint, fout );
+    pgp.decrypt_pipe( fint );
 
 }
