@@ -48,6 +48,97 @@ protected:
 
     };  ptr_t<NODE> obj;
 
+    /*─······································································─*/
+
+    bool verify_pipe( const file_t& fileA ) const noexcept {
+        fileA.pos( fileA.size() - sizeof( CTX ) );
+        auto xtc = fileA.read( sizeof( CTX ) );
+        ptr_t<ulong> len = new ulong(0);
+                   fileA.del_borrow();
+
+        CTX ctx; memcpy( &ctx, xtc.get(), sizeof( CTX ) );
+        if( memcmp( ctx.format, "WPGP", 5 ) < 0 ){ return false; }
+
+        fileA.pos( ctx.header[0] );
+        auto xhr = fileA.read( ctx.header[1]-ctx.header[0] );
+
+        try {
+
+        auto hdr = json::parse( encoder::XOR::get( 
+            encoder::base64::set( xhr ), ctx.mask )
+        );  fileA.del_borrow();
+
+        auto exp   = hdr["expiration"];
+
+        if( exp[0].as<uint>() != 0 )
+        if( exp[0].as<uint>()+exp[1].as<uint>() < process::seconds()/86400 ){ return false; }
+
+        } catch(...) {}
+
+        fileA.pos( ctx.hash[0] );
+        auto sha = fileA.read( ctx.hash[1]-ctx.hash[0] );
+                   fileA.del_borrow();
+
+        auto hash= crypto::hash::SHA256();
+        auto self= type::bind( this );
+             hash.update( xhr );
+
+        fileA.pos( ctx.body[0] ); process::await([&](){
+            if( !fileA.is_available() ){ return -1; }
+        coStart
+
+            while( *len < ( ctx.body[1] - ctx.body[0] ) ){ do {
+                auto dta = fileA.read( ( ctx.body[1] - ctx.body[0] ) - *len ); 
+                     hash.update( dta ); *len += dta.size();
+            } while(0); coNext; }
+
+        coStop
+        });
+
+        return hash.get() == sha;
+    }
+
+    bool verify_from_memory( const string_t& pkey ) const noexcept {
+        try { if( pkey.empty() ){ return false; }
+
+            CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
+            auto hash = pkey.slice( ctx.hash[0], ctx.hash[1] ); 
+
+            try {
+
+            auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
+                pkey.slice( ctx.header[0], ctx.header[1] )
+            ), ctx.mask ));
+
+            auto exp  = header["expiration"];
+            auto body = encoder::XOR::get( encoder::base64::set( 
+                pkey.slice( ctx.body[0], ctx.body[1] ) 
+            ), ctx.mask );
+
+            if( exp.has_value() && exp[0].as<uint>() != 0 )
+            if( exp[0].as<uint>()+exp[1].as<uint>() < process::seconds()/86400 ){ return false; }
+
+            } catch( ... ) {}
+
+            auto sha  = crypto::hash::SHA256(); sha.update( 
+                pkey.slice( ctx.body[0], ctx.header[1] )
+            );
+
+            if( memcmp( ctx.format, "WPGP", 5 ) < 0 ){ return false; }
+            if( hash != sha.get() )                  { return false; }
+
+                        return true;
+        } catch( ... ){ return false; }
+    }
+
+    bool verify( const string_t& path ) const noexcept {
+        try { 
+            file_t file ( path, "r" ); 
+            auto data = stream::await( file );
+            return verify_from_memory( data );
+        } catch( ... ) { return false; }
+    }
+
 public: 
 
     event_t<except_t> onError;
@@ -152,7 +243,7 @@ public:
     /*─······································································─*/
 
     void read_private_key_from_memory( const string_t& pkey, const string_t& pass=nullptr ) const {
-        if( !verify_key_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
+        if( !verify_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
         CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
         
         auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
@@ -186,7 +277,7 @@ public:
     /*─······································································─*/
 
     void read_public_key_from_memory( const string_t& pkey ) const {
-        if( !verify_key_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
+        if( !verify_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
         CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
         
         auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
@@ -321,7 +412,8 @@ public:
     /*─······································································─*/
 
     string_t decrypt_message( const string_t& message ) const noexcept {
-      //if( !verify_message_from_memory( message ) ){ _EERROR( onError, "Invalid WPGP Message" ); return; }
+        if( !verify_from_memory( message ) )
+          { _EERROR( onError, "Invalid WPGP Message" ); return nullptr; }
 
         if( message.empty() ){ return nullptr; }
         auto xtc = message.slice( -sizeof( CTX ) );
@@ -351,7 +443,7 @@ public:
     }
 
     void decrypt_pipe( const file_t& fileA ) const noexcept {
-      //if( !verify_message( fileA ) ){ _EERROR( onError, "Invalid WPGP Message" ); return; }
+        if( !verify_pipe( fileA ) ){ _EERROR( onError, "Invalid WPGP Message" ); return; }
 
         fileA.pos( fileA.size() - sizeof( CTX ) );
         auto xtc = fileA.read( sizeof( CTX ) );
@@ -406,45 +498,6 @@ public:
     void decrypt_pipe( const T& fileA, const V& fileB ) const noexcept {
         onData([=]( string_t data ){ fileB.write( data ); });
         decrypt_pipe( fileA );
-    }
-
-    /*─······································································─*/
-
-    bool verify_key_from_memory( const string_t& pkey ) const noexcept {
-        try { if( pkey.empty() ){ return false; }
-
-            CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
-            auto hash = pkey.slice( ctx.hash[0], ctx.hash[1] ); 
-
-            auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
-                pkey.slice( ctx.header[0], ctx.header[1] )
-            ), ctx.mask ));
-
-            auto exp  = header["expiration"];
-            auto body = encoder::XOR::get( encoder::base64::set( 
-                pkey.slice( ctx.body[0], ctx.body[1] ) 
-            ), ctx.mask );
-
-            auto sha  = crypto::hash::SHA256(); sha.update( 
-                pkey.slice( ctx.body[0], ctx.header[1] )
-            );
-
-            if( memcmp( ctx.format, "WPGP", 5 ) < 0 ){ return false; }
-            if( hash != sha.get() )                  { return false; }
-
-            if( exp[0].as<uint>() != 0 )
-            if( exp[0].as<uint>()+exp[1].as<uint>() < process::seconds()/86400 ){ return false; }
-
-                        return true;
-        } catch( ... ){ return false; }
-    }
-
-    bool verify_key( const string_t& path ) const noexcept {
-        try { 
-            file_t file ( path, "r" ); 
-            auto data = stream::await( file );
-            return verify_key_from_memory( data );
-        } catch( ... ) { return false; }
     }
 
     /*─······································································─*/
