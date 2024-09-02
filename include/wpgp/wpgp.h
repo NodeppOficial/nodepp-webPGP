@@ -28,11 +28,8 @@ namespace nodepp { class wpgp_t {
 protected:
 
     struct CTX {
-        char  format[5] = {"WPGP"};
-        ulong header[2] = {0,0};
-        ulong   body[2] = {0,0};
-        ulong   hash[2] = {0,0};
-        char    mask[5] ;
+        char format[5] = {"WPGP"};
+        char   mask[5] ;
     };
 
     struct NODE {
@@ -50,69 +47,24 @@ protected:
 
     /*─······································································─*/
 
-    bool verify_pipe( const file_t& fileA ) const noexcept {
-        fileA.pos( fileA.size() - sizeof( CTX ) );
-        auto xtc = fileA.read( sizeof( CTX ) );
-        ptr_t<ulong> len = new ulong(0);
-                   fileA.del_borrow();
-
-        CTX ctx; memcpy( &ctx, xtc.get(), sizeof( CTX ) );
-        if( memcmp( ctx.format, "WPGP", 5 ) < 0 ){ return false; }
-
-        fileA.pos( ctx.header[0] );
-        auto xhr = fileA.read( ctx.header[1]-ctx.header[0] );
-
-        try {
-
-        auto hdr = json::parse( encoder::XOR::get( 
-            encoder::base64::set( xhr ), ctx.mask )
-        );  fileA.del_borrow();
-
-        auto exp   = hdr["expiration"];
-
-        if( exp[0].as<uint>() != 0 )
-        if( exp[0].as<uint>()+exp[1].as<uint>() < process::seconds()/86400 ){ return false; }
-
-        } catch(...) {}
-
-        fileA.pos( ctx.hash[0] );
-        auto sha = fileA.read( ctx.hash[1]-ctx.hash[0] );
-                   fileA.del_borrow();
-
-        auto hash= crypto::hash::SHA256();
-        auto self= type::bind( this );
-             hash.update( xhr );
-
-        fileA.pos( ctx.body[0] ); process::await([&](){
-            if( !fileA.is_available() ){ return -1; }
-        coStart
-
-            while( *len < ( ctx.body[1] - ctx.body[0] ) ){ do {
-                auto dta = fileA.read( ( ctx.body[1] - ctx.body[0] ) - *len ); 
-                     hash.update( dta ); *len += dta.size();
-            } while(0); coNext; }
-
-        coStop
-        });
-
-        return hash.get() == sha;
-    }
-
     bool verify_from_memory( const string_t& pkey ) const noexcept {
         try { if( pkey.empty() ){ return false; }
 
-            CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
-            auto hash = pkey.slice( ctx.hash[0], ctx.hash[1] ); 
+            CTX ctx; memcpy( &ctx, pkey.get(), sizeof( CTX ) );
+            
+            auto pos = regex::search_all( pkey, "[^.]+" ); pos.shift();
+            if ( pos.empty() ){ return false; }
 
-            try {
+            try { 
 
             auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
-                pkey.slice( ctx.header[0], ctx.header[1] )
+                 pkey.slice( pos[0][0], pos[0][1] )
             ), ctx.mask ));
 
             auto exp  = header["expiration"];
+
             auto body = encoder::XOR::get( encoder::base64::set( 
-                pkey.slice( ctx.body[0], ctx.body[1] ) 
+                 pkey.slice( pos[1][0], pos[1][1] ) 
             ), ctx.mask );
 
             if( exp.has_value() && exp[0].as<uint>() != 0 )
@@ -120,8 +72,9 @@ protected:
 
             } catch( ... ) {}
 
+            auto hash = pkey.slice( pos[2][0], pos[2][1] ); 
             auto sha  = crypto::hash::SHA256(); sha.update( 
-                pkey.slice( ctx.body[0], ctx.header[1] )
+                 pkey.slice( 0, pos[1][1] + 1 )
             );
 
             if( memcmp( ctx.format, "WPGP", 5 ) < 0 ){ return false; }
@@ -179,29 +132,19 @@ public:
         
         auto body   = obj->fd.write_private_key_to_memory( pass.get() );
              body   = encoder::base64::get( encoder::XOR::get( body, ctx.mask ) );
-
         auto sha    = crypto::hash::SHA256(); 
 
-        auto header = encoder::base64::get( encoder::XOR::get( 
-            json::stringify( object_t({
-                { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
-                { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
-                { "size", obj->size }, { "type", "PRIVATE" }
-            }) 
-        ), ctx.mask ));
+        auto header = encoder::base64::get( encoder::XOR::get( json::stringify( object_t({
+            { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
+            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
+            { "size", obj->size }, { "type", "PRIVATE" }
+        })), ctx.mask ));
 
-        sha.update( body ); sha.update( header );
-
-        ctx.body[0]   = 0;
-        ctx.body[1]   = ctx.body[0]   + body.size();
-
-        ctx.header[0] = ctx.body[1]   ;
-        ctx.header[1] = ctx.header[0] + header.size();
-
-        ctx.hash[0]   = ctx.header[1] ;
-        ctx.hash[1]   = ctx.hash[0]   + sha.get().size();
-
-        return body + header + sha.get() + string_t( (char*)& ctx, sizeof( CTX ) );
+        auto data = string_t( (char*)& ctx, sizeof( CTX ) ) + ".";
+             data+= header + "." + body + "."; 
+        sha.update( data ); data += sha.get(); 
+        
+        return data;
     }
 
     /*─······································································─*/
@@ -215,43 +158,37 @@ public:
         
         auto body   = obj->fd.write_public_key_to_memory();
              body   = encoder::base64::get( encoder::XOR::get( body, ctx.mask ) );
-
         auto sha    = crypto::hash::SHA256(); 
 
-        auto header = encoder::base64::get( encoder::XOR::get( 
-            json::stringify( object_t({
-                { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
-                { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
-                { "size", obj->size }, { "type", "PUBLIC" }
-            }) 
-        ), ctx.mask ));
+        auto header = encoder::base64::get( encoder::XOR::get( json::stringify( object_t({
+            { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
+            { "expiration", array_t<uint>({ obj->stmp[0], obj->stmp[1] }) },
+            { "size", obj->size }, { "type", "PUBLIC" }
+        })), ctx.mask ));
 
-        sha.update( body ); sha.update( header );
-
-        ctx.body[0]   = 0;
-        ctx.body[1]   = ctx.body[0]   + body.size();
-
-        ctx.header[0] = ctx.body[1]   ;
-        ctx.header[1] = ctx.header[0] + header.size();
-
-        ctx.hash[0]   = ctx.header[1] ;
-        ctx.hash[1]   = ctx.hash[0]   + sha.get().size();
-
-        return body + header + sha.get() + string_t( (char*)& ctx, sizeof( CTX ) );
+        auto data = string_t( (char*)& ctx, sizeof( CTX ) ) + ".";
+             data+= header + "." + body + ".";
+        sha.update( data ); data += sha.get();
+        
+        return data;
     }
 
     /*─······································································─*/
 
     void read_private_key_from_memory( const string_t& pkey, const string_t& pass=nullptr ) const {
         if( !verify_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
-        CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
+        
+        CTX ctx; memcpy( &ctx, pkey.get(), sizeof( CTX ) );
+
+        auto pos = regex::search_all( pkey, "[^.]+" ); pos.shift();
+        if ( pos.empty() ){ return; }
         
         auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
-             pkey.slice( ctx.header[0], ctx.header[1] )
+             pkey.slice( pos[0][0], pos[0][1] )
         ), ctx.mask ));
 
         auto body = encoder::XOR::get( encoder::base64::set( 
-             pkey.slice( ctx.body[0], ctx.body[1] ) 
+             pkey.slice( pos[1][0], pos[1][1] )
         ), ctx.mask );
 
         if( header["type"].as<string_t>() != "PRIVATE" )
@@ -269,8 +206,7 @@ public:
     }
 
     void read_private_key( const string_t& path, const string_t& pass=nullptr ) const {
-        file_t file ( path, "r" ); 
-        auto data = stream::await( file );
+        file_t file ( path, "r" ); auto data = stream::await( file );
         read_private_key_from_memory( data, pass );
     }
 
@@ -278,14 +214,18 @@ public:
 
     void read_public_key_from_memory( const string_t& pkey ) const {
         if( !verify_from_memory( pkey ) ){ _EERROR( onError, "Invalid WPGP Key" ); return; }
-        CTX ctx; memcpy( &ctx, pkey.slice( -sizeof( CTX ) ).get(), sizeof( CTX ) );
+        
+        CTX ctx; memcpy( &ctx, pkey.get(), sizeof( CTX ) );
+
+        auto pos = regex::search_all( pkey, "[^.]+" ); pos.shift();
+        if ( pos.empty() ){ return; }
         
         auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
-             pkey.slice( ctx.header[0], ctx.header[1] )
+             pkey.slice( pos[0][0], pos[0][1] )
         ), ctx.mask ));
 
         auto body = encoder::XOR::get( encoder::base64::set( 
-             pkey.slice( ctx.body[0], ctx.body[1] ) 
+             pkey.slice( pos[1][0], pos[1][1] )
         ), ctx.mask );
 
         if( header["type"].as<string_t>() != "PUBLIC" )
@@ -303,14 +243,13 @@ public:
     }
 
     void read_public_key( const string_t& path ) const {
-        file_t file ( path, "r" ); 
-        auto data = stream::await( file );
+        file_t file ( path, "r" ); auto data = stream::await( file );
         read_public_key_from_memory( data );
     }
 
     /*─······································································─*/
 
-    string_t encrypt_message( const string_t& message ) const noexcept { 
+    string_t encrypt_message( const string_t& msg ) const noexcept { 
         CTX ctx; auto sec = crypto::hash::SHA256();
                  auto sha = crypto::hash::SHA256();
 
@@ -321,44 +260,34 @@ public:
         sec.update( obj->fd.write_private_key_to_memory() );
 
         auto enc = crypto::encrypt::AES_256_ECB( sec.get() );
-                   enc.update( message );
+                   enc.update( msg );
         
-        auto body   = encoder::base64::get( encoder::XOR::get( 
+        auto body= encoder::base64::get( encoder::XOR::get( 
              enc.get(), ctx.mask
         ));
 
         auto header = encoder::base64::get( encoder::XOR::get(
              obj->fd.public_encrypt( json::stringify( object_t({
-                { "size", message.size() }, { "type", "MESSAGE" }, 
-                { "pass", sec.get()      }
+                { "type", "MESSAGE" }, { "pass", sec.get() }
              }))
         ), ctx.mask ));
 
-        sha.update( body ); sha.update( header );
-
-        ctx.body[0]   = 0;
-        ctx.body[1]   = ctx.body[0]   + body.size();
-
-        ctx.header[0] = ctx.body[1]   ;
-        ctx.header[1] = ctx.header[0] + header.size();
-
-        ctx.hash[0]   = ctx.header[1] ;
-        ctx.hash[1]   = ctx.hash[0]   + sha.get().size();
-
-        return body + header + sha.get() + string_t( (char*)& ctx, sizeof( CTX ) );
+        auto data = string_t( (char*)& ctx, sizeof( CTX ) ) + ".";
+             data+= header + "." + body + ".";
+        sha.update( data ); data += sha.get(); 
+        
+        return data;
     }
 
     template< class T >
-    void encrypt_pipe( const T& fileA ) const noexcept {
-        char pass[5]; memcpy( pass, encoder::key::generate(4).get(), 5 );
+    void encrypt_pipe( const T& file ) const noexcept {
+        CTX ctx ; memcpy( ctx.mask, encoder::key::generate(4).get(), 5 );
 
-        auto XOR = crypto::encrypt::XOR( pass );
+        auto XOR = crypto::encrypt::XOR( ctx.mask );
         auto b64 = crypto::encoder::BASE64();
         auto sec = crypto::hash::SHA256();
         auto sha = crypto::hash::SHA256();
         auto self= type::bind( this );
-
-        ptr_t<ulong> length = new ulong(0);
 
         sec.update( string::to_string( rand() ) );
         sec.update( string::to_string( process::now() ) );
@@ -366,138 +295,116 @@ public:
 
         auto enc = crypto::encrypt::AES_256_ECB( sec.get() );
 
-        fileA.onData([=]( string_t data ){ enc.update( data ); });
-        enc  .onData([=]( string_t data ){ XOR.update( data ); });
-        XOR  .onData([=]( string_t data ){ b64.update( data ); });
-        b64  .onData([=]( string_t data ){
+        file.onData([=]( string_t data ){ enc.update( data ); });
+        enc .onData([=]( string_t data ){ XOR.update( data ); });
+        XOR .onData([=]( string_t data ){ b64.update( data ); });
+        b64 .onData([=]( string_t data ){
             self->onData.emit( data ); 
-           *length += data.size();
             sha.update( data );
         });
 
-        fileA.onClose([=](){ enc.free(); b64.free(); 
-            CTX ctx; memcpy( ctx.mask, pass, 5 );
-
-            auto header = encoder::base64::get( encoder::XOR::get(
-                 self->obj->fd.public_encrypt( json::stringify( object_t({
-                    { "size", *length   }, { "type", "MESSAGE" },
-                    { "pass", sec.get() },
-                 }))
-            ), ctx.mask )); sha.update( header );
-
-            ctx.body[0]   = 0;
-            ctx.body[1]   = ctx.body[0]   + *length;
-
-            ctx.header[0] = ctx.body[1]   ;
-            ctx.header[1] = ctx.header[0] + header.size();
-
-            ctx.hash[0]   = ctx.header[1] ;
-            ctx.hash[1]   = ctx.hash[0]   + sha.get().size();
-
-            self->onData.emit( header ); self->onData.emit( sha.get() );
-            self->onData.emit( string_t( (char*) &ctx, sizeof(CTX) ) );
+        file.onClose([=](){ 
+            enc.free(); b64.free(); sha.update( "." );
+            self->onData.emit( "." + sha.get() );
             self->onClose.emit();
-
         });
 
-        stream::pipe( fileA );
+        auto data = string_t( (char*) &ctx, sizeof(CTX) ) + ".";
+             data+= encoder::base64::get( encoder::XOR::get(
+             obj->fd.public_encrypt( json::stringify( object_t({
+                { "type", "MESSAGE" }, { "pass", sec.get() },
+            }))), ctx.mask )) + "."; sha.update( data );
+
+        self->onData.emit( data ); stream::pipe( file );
     }
 
     template< class T, class V >
-    void encrypt_pipe( const T& fileA, const V& fileB ) const noexcept {
+    void encrypt_pipe( const T& file, const V& fileB ) const noexcept {
         onData([=]( string_t data ){ fileB.write( data ); });
-        encrypt_pipe( fileA );
+        encrypt_pipe( file );
     }
 
     /*─······································································─*/
 
-    string_t decrypt_message( const string_t& message ) const noexcept {
-        if( !verify_from_memory( message ) )
-          { _EERROR( onError, "Invalid WPGP Message" ); return nullptr; }
+    string_t decrypt_message( const string_t& msg ) const noexcept {
+        if( !verify_from_memory( msg ) )
+          { _EERROR( onError, "Invalid WPGP message" ); return nullptr; }
 
-        if( message.empty() ){ return nullptr; }
-        auto xtc = message.slice( -sizeof( CTX ) );
-
-        CTX ctx; memcpy( &ctx, xtc.get(), sizeof( CTX ) );
-
-        auto hash = crypto::hash::SHA256(); hash.update(
-            message.slice( ctx.body[0], ctx.header[1] )
-        );
+        CTX  ctx ; memcpy( &ctx, msg.get(), sizeof( CTX ) );
+        auto pos = regex::search_all( msg, "[^.]+" ); pos.shift();
 
         auto header = json::parse( obj->fd.private_decrypt( 
             encoder::XOR::get( encoder::base64::set(
-                message.slice( ctx.header[0], ctx.header[1] )
+               msg.slice( pos[0][0], pos[0][1] )
             ), ctx.mask )
         ));
 
-        auto sha = message.slice( ctx.hash[0], ctx.hash[1] );
         auto sec = header["pass"].as<string_t>();
-        if ( sha != hash.get() ){ return nullptr; }
 
         auto dec = crypto::decrypt::AES_256_ECB( sec );
              dec.update( encoder::XOR::get( encoder::base64::set(
-                message.slice( ctx.body[0], ctx.body[1] ) 
+                msg.slice( pos[1][0], pos[1][1] )
              ), ctx.mask ));
 
         return dec.get();
     }
 
-    void decrypt_pipe( const file_t& fileA ) const noexcept {
-        if( !verify_pipe( fileA ) ){ _EERROR( onError, "Invalid WPGP Message" ); return; }
+    template< class T >
+    void decrypt_pipe( const T& file ) const noexcept {
+    try {
 
-        fileA.pos( fileA.size() - sizeof( CTX ) );
-        auto xtc = fileA.read( sizeof( CTX ) );
-                   fileA.del_borrow();
+        auto xtc = file.read_until( '.' ); xtc.pop();
+        auto rdh = file.read_until( '.' ); rdh.pop();
 
-        CTX ctx; memcpy( &ctx, xtc.get(), sizeof( CTX ) );
+        CTX  ctx ; memcpy( &ctx, xtc.get(), sizeof( CTX ) );
 
-        fileA.pos( ctx.header[0] );
-        auto xhr = fileA.read( ctx.header[1]-ctx.header[0] );
         auto hdr = json::parse( obj->fd.private_decrypt( 
-            encoder::XOR::get( encoder::base64::set( xhr ), ctx.mask )
-        )); fileA.del_borrow();
-
-        auto sec = hdr["pass"].as<string_t>();
-        ptr_t<ulong> len = new ulong(0);
-
-        fileA.pos( ctx.hash[0] );
-        auto sha = fileA.read( ctx.hash[1]-ctx.hash[0] );
-                   fileA.del_borrow();
+            encoder::XOR::get( encoder::base64::set( rdh ), ctx.mask )
+        ));
+            
+        auto sec = (string_t) hdr["pass"];
 
         auto dec = crypto::decrypt::AES_256_ECB( sec );
         auto XOR = crypto::encrypt::XOR( ctx.mask );
         auto b64 = crypto::decoder::BASE64();
         auto hash= crypto::hash::SHA256();
         auto self= type::bind( this );
-             hash.update( xhr );
+             
+        hash.update( xtc + "." + rdh + "." );
 
-        fileA.onDrain([=](){ dec.free(); b64.free(); self->onClose.emit(); });
-        dec.onData([=]( string_t data ){ self->onData.emit( data ); });
-        b64.onData([=]( string_t data ){ XOR.update( data ); });
-        XOR.onData([=]( string_t data ){ dec.update( data ); });
-        fileA.pos( ctx.body[0] );
+        file.onDrain([=](){ dec.free(); b64.free(); self->onClose.emit(); });
+        dec .onData([=]( string_t data ){ self->onData.emit( data ); });
+        b64 .onData([=]( string_t data ){ XOR.update( data ); });
+        XOR .onData([=]( string_t data ){ dec.update( data ); });
 
         process::add([=](){
-            if( !fileA.is_available() ){ return -1; }
+            if( !file.is_available() ){ return -1; }
         coStart
 
-            while( *len < ( ctx.body[1] - ctx.body[0] ) ){ do {
-                auto dta = fileA.read( ( ctx.body[1] - ctx.body[0] ) - *len ); 
-                     hash.update( dta ); b64.update( dta );
-                    *len += dta.size();
+            while( true ){ do {
+                auto dta = file.read();
+                auto atd = regex::match( dta, "[^.]+" );
+
+                hash.update( atd ); 
+                b64 .update( atd );
+
+                if( !dta.find( '.' ).empty() ){ break; }
             } while(0); coNext; }
 
-            fileA.close();
-
+            file.close();
+            
         coStop
         });
 
-    }
+    } catch (...) {
+        _EERROR( onError, "Invalid WPGP message" ); 
+        return;
+    }}
 
     template< class T, class V >
-    void decrypt_pipe( const T& fileA, const V& fileB ) const noexcept {
+    void decrypt_pipe( const T& file, const V& fileB ) const noexcept {
         onData([=]( string_t data ){ fileB.write( data ); });
-        decrypt_pipe( fileA );
+        decrypt_pipe( file );
     }
 
     /*─······································································─*/
