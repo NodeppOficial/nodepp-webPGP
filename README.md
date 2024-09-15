@@ -5,9 +5,14 @@ WPGP is an innovative approach to the traditional PGP (Pretty Good Privacy) encr
 By integrating contemporary advancements, WPGP aims to provide a user-friendly experience while maintaining the core principles of encryption and data protection that PGP is known for. This reimagining not only addresses the evolving needs of users but also ensures that security remains a top priority in the digital landscape.
 
 ## Dependencies
-- **Openssl**
-    - 🪟: `pacman -S mingw-w64-ucrt-x86_64-openssl`
-    - 🐧: `sudo apt install libssl-dev`
+```bash
+# Openssl
+    🪟: pacman -S mingw-w64-ucrt-x86_64-openssl
+    🐧: sudo apt install libssl-dev
+
+# Nodepp
+    💻: https://github.com/NodeppOficial/nodepp
+```
 
 ## Build & Run
 - 🪟: `g++ -o main main.cpp -I ./include -lz -lws2_32 -lssl -lcrypto ; ./main`
