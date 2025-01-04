@@ -16,8 +16,8 @@ By integrating contemporary advancements, WPGP aims to provide a user-friendly e
 
 ## Build & Run
 ```bash
-🪟: g++ -o main main.cpp -I ./include -lz -lssl -lcrypto -lws2_32 ; ./main
-🐧: g++ -o main main.cpp -I ./include -lz -lssl -lcrypto ; ./main
+🪟: g++ -o main main.cpp -I ./include -lssl -lcrypto -lws2_32 ; ./main
+🐧: g++ -o main main.cpp -I ./include -lssl -lcrypto ; ./main
 ```
 
 ## Usage
