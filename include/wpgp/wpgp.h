@@ -130,9 +130,9 @@ public:
     string_t write_private_key_to_memory( const string_t& pass=nullptr ) const noexcept {
         CTX ctx; memcpy( &ctx.mask, encoder::key::generate( 4 ).get(), 5 );
         
+        auto sha    = crypto::hash::SHA256(); 
         auto body   = obj->fd.write_private_key_to_memory( pass.get() );
              body   = encoder::base64::get( encoder::XOR::get( body, ctx.mask ) );
-        auto sha    = crypto::hash::SHA256(); 
 
         auto header = encoder::base64::get( encoder::XOR::get( json::stringify( object_t({
             { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
@@ -156,9 +156,9 @@ public:
     string_t write_public_key_to_memory() const noexcept { 
         CTX ctx; memcpy( &ctx.mask, encoder::key::generate( 4 ).get(), 5 );
         
+        auto sha    = crypto::hash::SHA256(); 
         auto body   = obj->fd.write_public_key_to_memory();
              body   = encoder::base64::get( encoder::XOR::get( body, ctx.mask ) );
-        auto sha    = crypto::hash::SHA256(); 
 
         auto header = encoder::base64::get( encoder::XOR::get( json::stringify( object_t({
             { "name", obj->name }, { "mail", obj->mail }, { "comment", obj->cmmt },
@@ -257,7 +257,7 @@ public:
 
         sec.update( string::to_string( rand() ) );
         sec.update( string::to_string( process::now() ) );
-        sec.update( obj->fd.write_private_key_to_memory() );
+        sec.update( obj->fd.write_public_key_to_memory() );
 
         auto enc = crypto::encrypt::AES_256_ECB( sec.get() );
                    enc.update( msg );
@@ -291,7 +291,7 @@ public:
 
         sec.update( string::to_string( rand() ) );
         sec.update( string::to_string( process::now() ) );
-        sec.update( obj->fd.write_private_key_to_memory() );
+        sec.update( obj->fd.write_public_key_to_memory() );
 
         auto enc = crypto::encrypt::AES_256_ECB( sec.get() );
 
