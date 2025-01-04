@@ -34,7 +34,7 @@ void server() {
         2048             // RSA size
     );
 
-    pgp.write_private_key( "PRiVATE.wpgp" );
+    pgp.write_private_key( "PRIVATE.wpgp" );
 
     server.listen( "localhost", 8000, [=](...){
         console::log("-> ws://localhost:8000");
