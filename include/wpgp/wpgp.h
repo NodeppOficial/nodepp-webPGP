@@ -55,6 +55,8 @@ protected:
             auto pos = regex::search_all( pkey, "[^.]+" ); pos.shift();
             if ( pos.empty() ){ return false; }
 
+            try { 
+
             auto header = json::parse( encoder::XOR::get( encoder::base64::set( 
                  pkey.slice( pos[0][0], pos[0][1] )
             ), ctx.mask ));
@@ -67,6 +69,8 @@ protected:
 
             if( exp.has_value() && exp[0].as<uint>() != 0 )
             if( exp[0].as<uint>()+exp[1].as<uint>() < process::seconds()/86400 ){ return false; }
+
+            } catch( ... ) {}
 
             auto hash = pkey.slice( pos[2][0], pos[2][1] ); 
             auto sha  = crypto::hash::SHA256(); sha.update( 
@@ -415,5 +419,3 @@ public:
 /*────────────────────────────────────────────────────────────────────────────*/
 
 #endif
-
-/*────────────────────────────────────────────────────────────────────────────*/
